@@ -1,0 +1,102 @@
+# Hardware Wiring Reference — Revision 3
+# Head Impact Monitor: Arduino Nano 33 BLE Rev2 + ADXL375 + BMI270 (internal)
+# =============================================================================
+# NOTE: This is a temporary configuration while MPU-9250 headers are being
+# soldered. The BMI270 is the onboard gyroscope — no wiring needed for it.
+# Swap back to Revision 2 firmware once MPU-9250 headers are soldered.
+# =============================================================================
+
+==============================================================================
+ADXL375 → Arduino Nano 33 BLE Rev2  (SPI) — unchanged from Rev 2
+==============================================================================
+
+  ADXL375 Pin    Nano 33 BLE Rev2 Pin    Notes
+  ───────────    ─────────────────────   ──────────────────────────────────
+  VCC            3.3V                    3.3V ONLY. 5V will damage sensor.
+  GND            GND
+  CS             D10                     Chip select (active LOW)
+  SCL            D13                     SPI clock
+  SDA            D11                     MOSI (controller → sensor)
+  SDO            D12                     MISO (sensor → controller)
+
+  SPI MODE: ADXL375 uses Mode 3 (CPOL=1, CPHA=1). Set correctly in firmware.
+  If DEVID returns 0xFF instead of 0xE5, check CS pin and SPI mode first.
+
+==============================================================================
+BMI270 — NO WIRING REQUIRED
+==============================================================================
+
+  The BMI270 is soldered directly onto the Nano 33 BLE Rev2 PCB.
+  It is accessed via the Arduino_BMI270_BMM150 library.
+  No external connections needed.
+
+  Library install:
+    Arduino IDE → Tools → Manage Libraries → search "Arduino_BMI270_BMM150"
+
+==============================================================================
+MPU-9250 — NOT CONNECTED IN THIS REVISION
+==============================================================================
+
+  The MPU-9250 is awaiting header soldering.
+  Once headers are soldered, switch back to Revision 2 firmware and
+  follow the WIRING_REFERENCE from that revision for MPU-9250 connections.
+
+==============================================================================
+LEDs → Arduino Nano 33 BLE Rev2  (unchanged from Rev 2)
+==============================================================================
+
+  LED Color    Nano Pin    Series Resistor
+  ─────────    ────────    ───────────────
+  Green        D4          220Ω to GND
+  Yellow       D5          220Ω to GND
+  Red          D6          220Ω to GND
+
+==============================================================================
+COMPLETE PIN ALLOCATION — REVISION 3
+==============================================================================
+
+  Nano Pin    Function              Connected To
+  ────────    ──────────────────    ──────────────────────────────
+  3.3V        Power                 ADXL375 VCC
+  GND         Ground                ADXL375 GND, LED resistors
+  D4          Green LED             LED anode
+  D5          Yellow LED            LED anode
+  D6          Red LED               LED anode
+  D10         SPI CS                ADXL375 CS
+  D11         SPI MOSI              ADXL375 SDA
+  D12         SPI MISO              ADXL375 SDO
+  D13         SPI SCK               ADXL375 SCL
+  A4          (reserved for I2C)    Leave unconnected for now
+  A5          (reserved for I2C)    Leave unconnected for now
+
+==============================================================================
+EXPECTED SERIAL MONITOR OUTPUT ON STARTUP
+==============================================================================
+
+  # Head Impact Monitor v3 — ADXL375 + BMI270 (internal)
+  # Initializing...
+  # ADXL375 DEVID: 0xE5
+  # ADXL375 initialized: +-200g, 400 Hz ODR, 13-bit full res
+  # BMI270 gyroscope sample rate: 100.00 Hz
+  # All sensors online.
+  # NOTE: Using internal BMI270 gyroscope (±2000 deg/s).
+  # Swap to MPU-9250 after headers are soldered.
+  # Monitoring for impacts...
+  # OUTPUT FORMAT: peak_linear_g,peak_rotational_rad_s2
+
+==============================================================================
+KNOWN LIMITATION OF THIS REVISION
+==============================================================================
+
+  The BMI270 gyroscope sample rate is ~100 Hz (library default), lower than
+  the MPU-9250's configurable 500 Hz. This means:
+
+  - The firmware loop runs at 500 Hz but gyro data only updates at ~100 Hz.
+    Between gyro updates, the firmware reuses the last filtered value.
+    This is handled gracefully via the IMU.gyroscopeAvailable() check.
+
+  - Rotational acceleration (computed by differentiating gyro data) will
+    have lower temporal resolution than with the MPU-9250.
+
+  - For bench testing and pipeline validation, this is perfectly adequate.
+    For final impact characterisation, switch to the MPU-9250.
