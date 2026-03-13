@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+.env
+venv/
+.venv/
+
+# Data files
+data/raw/*.csv
+data/logs/*.csv
+*.h5
+*.pkl
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# IDE files
+.vscode/
+.idea/
+
+# Arduino build artifacts
+build/
+*.elf
+*.hex
+
+# OS files
+.DS_Store
+Thumbs.db
