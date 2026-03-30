@@ -350,6 +350,9 @@ void classify_and_transmit(float peak_lin_g, float peak_rot_rad_s2) {
   set_led(severity);
 
   // Data line — parsed by Python dashboard (no # prefix)
+  Serial.print("Severity (G1, Y2, R3): ");
+  Serial.println(severity,1);
+  
   Serial.print(peak_lin_g, 2);
   Serial.print(",");
   Serial.println(peak_rot_rad_s2, 2);
