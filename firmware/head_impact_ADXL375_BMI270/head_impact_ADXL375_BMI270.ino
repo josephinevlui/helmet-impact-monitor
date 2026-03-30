@@ -1,10 +1,6 @@
 // =============================================================================
 // Head Impact Monitor — Arduino Nano 33 BLE Rev2
-// Revision 3: ADXL375 (SPI) + BMI270 internal gyroscope
-//
-// This revision uses the Nano 33 BLE Rev2's onboard BMI270 gyroscope
-// while the MPU-9250 is unavailable (awaiting header soldering).
-// When the MPU-9250 is ready, swap back to Revision 2.
+// Revision 4: ADXL375 (SPI) + BMI270 (internal) + WS2812B LED strip
 //
 // WHAT CHANGED FROM REVISION 2:
 //   - Removed Wire.h and all MPU-9250 register-level code
@@ -14,12 +10,21 @@
 //   - All signal processing, capture, classification, and serial output
 //     logic is identical to Revision 2
 //
-// HARDWARE:
-//   - Arduino Nano 33 BLE Rev2 (onboard BMI270 gyroscope — no wiring needed)
-//   - ADXL375 high-g accelerometer (SPI, ±200g)
-//   - 3x LEDs: Green (D4), Yellow (D5), Red (D6)
+// WHAT CHANGED FROM REVISION 3:
+//   - Removed: 3 individual LEDs on D4, D5, D6
+//   - Removed: set_led(int severity) function
+//   - Added:   WS2812B NeoPixel strip on D6 (Adafruit NeoPixel library)
+//   - Added:   show_severity_colour() — fills strip with severity colour
+//   - Added:   pulse_strip() — pulsing animation on impact
+//   - All sensor, signal processing, capture, and serial logic unchanged
 //
-// SPI WIRING — ADXL375 → Nano 33 BLE Rev2 (unchanged from Rev 2):
+// HARDWARE:
+//   - Arduino Nano 33 BLE Rev2
+//   - ADXL375 high-g accelerometer (SPI)
+//   - BMI270 onboard gyroscope (no wiring needed)
+//   - WS2812B LED strip (NeoPixel), data on D6
+//
+// SPI WIRING — ADXL375 → Nano 33 BLE Rev2 (unchanged):
 //   VCC  → 3.3V
 //   GND  → GND
 //   CS   → D10
@@ -27,13 +32,24 @@
 //   SDA  → D11  (MOSI)
 //   SDO  → D12  (MISO)
 //
-// LED WIRING (unchanged):
-//   Green  anode → D4 → 220Ω → GND
-//   Yellow anode → D5 → 220Ω → GND
-//   Red    anode → D6 → 220Ω → GND
+// WIRING — WS2812B LED strip:
+//   +5V  → Arduino 5V pin      (NOT 3.3V — strip needs 5V)
+//   GND  → Arduino GND
+//   DIN  → D6                  (data in)
+//
+//   NOTE: 3.3V logic from Nano drives WS2812B reliably at short lengths.
+//   If you see flickering, add a 300–500Ω resistor in series on the DIN wire.
 //
 // LIBRARY REQUIRED:
 //   Arduino_BMI270_BMM150 — install via Arduino IDE Library Manager
+//   Adafruit NeoPixel — install via Arduino IDE Library Manager
+//
+// LED STRIP BEHAVIOUR:
+//   Idle:         All LEDs off
+//   Impact GREEN: Strip fills solid green, then pulses twice, then fades off
+//   Impact YELLOW:Strip fills solid yellow, then pulses twice, then fades off
+//   Impact RED:   Strip fills solid red, then pulses three times, then fades off
+//   Below thresh: Single brief white flash (impact detected but below green)
 //
 // SERIAL OUTPUT FORMAT:
 //   peak_linear_g,peak_rotational_rad_s2
@@ -43,14 +59,38 @@
 
 #include <SPI.h>
 #include <Arduino_BMI270_BMM150.h>   // Onboard IMU (BMI270 gyroscope)
+#include <Adafruit_NeoPixel.h>
 
 // -----------------------------------------------------------------------------
 // PIN DEFINITIONS
 // -----------------------------------------------------------------------------
-#define PIN_LED_GREEN    4
-#define PIN_LED_YELLOW   5
-#define PIN_LED_RED      6
+#define PIN_LED_STRIP    6    // WS2812B data pin
 #define PIN_ADXL375_CS  10
+
+// -----------------------------------------------------------------------------
+// LED STRIP CONFIGURATION
+// -----------------------------------------------------------------------------
+#define NUM_LEDS          8    // Number of LEDs to control
+                               // Change this single value to resize the strip
+
+// NeoPixel object: (count, pin, type)
+// NEO_GRB + NEO_KHZ800 is correct for WS2812B strips
+Adafruit_NeoPixel strip(NUM_LEDS, PIN_LED_STRIP, NEO_GRB + NEO_KHZ800);
+
+// Severity colours (R, G, B)
+#define COLOUR_GREEN   0,   180,  0
+#define COLOUR_YELLOW  200, 120,  0
+#define COLOUR_RED     220,   0,  0
+#define COLOUR_WHITE   180, 180, 180
+#define COLOUR_OFF       0,   0,  0
+
+// Brightness levels for pulse animation (0–255)
+// Pulse sweeps from PULSE_LOW up to PULSE_HIGH and back down
+#define BRIGHTNESS_FULL   180    // Normal on brightness (not 255 — saves current)
+#define PULSE_HIGH        180
+#define PULSE_LOW          10
+#define PULSE_STEP         10    // Brightness increment per animation step
+#define PULSE_DELAY_MS      8    // Milliseconds between animation steps
 
 // -----------------------------------------------------------------------------
 // ADXL375 REGISTER MAP
@@ -101,8 +141,6 @@
 #define RED_LIN_THRESHOLD      60.0f
 #define RED_ROT_THRESHOLD      2500.0f
 
-#define LED_ON_DURATION_MS     2000
-
 // -----------------------------------------------------------------------------
 // GLOBAL STATE
 // -----------------------------------------------------------------------------
@@ -141,7 +179,12 @@ void    adxl375_read_accel(float &ax, float &ay, float &az);
 
 void    apply_lpf(float &filtered, float raw, float alpha);
 float   vec_magnitude(float x, float y, float z);
-void    set_led(int severity);
+
+void    strip_fill(uint8_t r, uint8_t g, uint8_t b);
+void    strip_clear();
+void    pulse_strip(uint8_t r, uint8_t g, uint8_t b, int pulses);
+void    show_impact(int severity);
+
 void    process_capture();
 void    classify_and_transmit(float peak_lin_g, float peak_rot_rad_s2);
 
@@ -152,18 +195,37 @@ void setup() {
   Serial.begin(115200);
   while (!Serial && millis() < 3000);
 
-  Serial.println("# Head Impact Monitor v3 — ADXL375 + BMI270 (internal)");
+  Serial.println("# Head Impact Monitor — ADXL375 + BMI270 + WS2812B");
   Serial.println("# Initializing...");
 
-  // --- LED setup and startup sweep ---
-  pinMode(PIN_LED_GREEN,  OUTPUT);
-  pinMode(PIN_LED_YELLOW, OUTPUT);
-  pinMode(PIN_LED_RED,    OUTPUT);
-  set_led(0);
-  set_led(1); delay(200);
-  set_led(2); delay(200);
-  set_led(3); delay(200);
-  set_led(0); delay(100);
+  // --- WS2812B strip init ---
+  strip.begin();
+  strip.setBrightness(BRIGHTNESS_FULL);
+  strip.clear();
+  strip.show();   // Push zeroed buffer to strip — all LEDs off
+
+  // Startup animation: sweep green → yellow → red → off
+  // Confirms every LED is functional and correctly wired
+  for (int i = 0; i < NUM_LEDS; i++) {
+    strip.setPixelColor(i, strip.Color(0, 180, 0));
+    strip.show();
+    delay(40);
+  }
+  delay(150);
+  for (int i = 0; i < NUM_LEDS; i++) {
+    strip.setPixelColor(i, strip.Color(200, 120, 0));
+    strip.show();
+    delay(40);
+  }
+  delay(150);
+  for (int i = 0; i < NUM_LEDS; i++) {
+    strip.setPixelColor(i, strip.Color(220, 0, 0));
+    strip.show();
+    delay(40);
+  }
+  delay(300);
+  strip.clear();
+  strip.show();
 
   // --- ADXL375 via SPI ---
   SPI.begin();
@@ -181,8 +243,8 @@ void setup() {
     Serial.println("# Install: Arduino_BMI270_BMM150 via Library Manager.");
     // Blink red indefinitely to signal hard fault
     while (true) {
-      set_led(3); delay(300);
-      set_led(0); delay(300);
+      strip_fill(220, 0, 0); delay(150);
+      strip_clear();          delay(150);
     }
   }
 
@@ -197,9 +259,7 @@ void setup() {
   }
 
   if (adxl375_ok && bmi270_ok) {
-    Serial.println("# All sensors online.");
-    Serial.println("# NOTE: Using internal BMI270 gyroscope (±2000 deg/s).");
-    Serial.println("# Swap to MPU-9250 after headers are soldered.");
+    Serial.println("# All sensors online. Monitoring for impacts");
   }
 
   Serial.println("# Monitoring for impacts...");
@@ -337,28 +397,131 @@ void process_capture() {
 // =============================================================================
 void classify_and_transmit(float peak_lin_g, float peak_rot_rad_s2) {
   int severity = 0;
+  String colour_out = "NONE";
 
   if (peak_lin_g > RED_LIN_THRESHOLD || peak_rot_rad_s2 > RED_ROT_THRESHOLD) {
     severity = 3;
+    colour_out = "RED";
   } else if ((peak_lin_g      >= YELLOW_LIN_MIN && peak_lin_g      <= YELLOW_LIN_MAX) ||
              (peak_rot_rad_s2 >= YELLOW_ROT_MIN && peak_rot_rad_s2 <= YELLOW_ROT_MAX)) {
     severity = 2;
+    colour_out = "YELLOW";
   } else if (peak_lin_g >= GREEN_LIN_MIN) {
     severity = 1;
+    colour_out = "GREEN";
   }
 
-  set_led(severity);
+  show_impact(severity);
 
   // Data line — parsed by Python dashboard (no # prefix)
-  Serial.print("Severity (G1, Y2, R3): ");
-  Serial.println(severity,1);
+  Serial.print("Colour: ");
+  Serial.println(colour_out);
   
   Serial.print(peak_lin_g, 2);
   Serial.print(",");
   Serial.println(peak_rot_rad_s2, 2);
 
-  delay(LED_ON_DURATION_MS);
-  set_led(0);
+}
+
+// =============================================================================
+// LED STRIP — FILL ALL WITH COLOUR
+// =============================================================================
+void strip_fill(uint8_t r, uint8_t g, uint8_t b) {
+  for (int i = 0; i < NUM_LEDS; i++) {
+    strip.setPixelColor(i, strip.Color(r, g, b));
+  }
+  strip.show();
+}
+
+// =============================================================================
+// LED STRIP — CLEAR ALL
+// =============================================================================
+void strip_clear() {
+  strip.clear();
+  strip.show();
+}
+
+// =============================================================================
+// LED STRIP — PULSE ANIMATION
+//
+// Pulses the strip by sweeping brightness from PULSE_HIGH down to PULSE_LOW
+// and back up, repeated 'pulses' times. The colour is maintained throughout.
+// Uses strip.setBrightness() which scales all pixels uniformly.
+//
+// Args:
+//   r, g, b: Base colour at full brightness
+//   pulses:  Number of complete pulse cycles
+// =============================================================================
+void pulse_strip(uint8_t r, uint8_t g, uint8_t b, int pulses) {
+  // Fill strip with target colour first
+  strip_fill(r, g, b);
+
+  for (int p = 0; p < pulses; p++) {
+    // Fade down
+    for (int b_val = PULSE_HIGH; b_val >= PULSE_LOW; b_val -= PULSE_STEP) {
+      strip.setBrightness(b_val);
+      strip.show();
+      delay(PULSE_DELAY_MS);
+    }
+    // Fade up
+    for (int b_val = PULSE_LOW; b_val <= PULSE_HIGH; b_val += PULSE_STEP) {
+      strip.setBrightness(b_val);
+      strip.show();
+      delay(PULSE_DELAY_MS);
+    }
+  }
+
+  // Restore full brightness after animation
+  strip.setBrightness(BRIGHTNESS_FULL);
+}
+
+// =============================================================================
+// LED STRIP — SHOW IMPACT
+//
+// Displays the full impact feedback sequence for a given severity level:
+//   1. Instant fill with severity colour
+//   2. Pulse animation (more pulses = more severe)
+//   3. Slow fade to off
+//
+// severity: 0=below threshold, 1=green, 2=yellow, 3=red
+// =============================================================================
+void show_impact(int severity) {
+  uint8_t r, g, b;
+  int pulses;
+
+  switch (severity) {
+    case 3:  // Red
+      r = 220; g = 0;   b = 0;
+      pulses = 3;   // Three pulses signals highest severity
+      break;
+    case 2:  // Yellow
+      r = 200; g = 120; b = 0;
+      pulses = 2;
+      break;
+    case 1:  // Green
+      r = 0;   g = 180; b = 0;
+      pulses = 2;
+      break;
+    default:  // Below threshold — brief white flash only
+      strip_fill(180, 180, 180);
+      delay(100);
+      strip_clear();
+      return;
+  }
+
+  // Pulse animation
+  pulse_strip(r, g, b, pulses);
+
+  // Slow fade out after pulsing
+  for (int b_val = BRIGHTNESS_FULL; b_val >= 0; b_val -= 3) {
+    strip.setBrightness(b_val);
+    strip.show();
+    delay(12);
+  }
+
+  // Ensure strip is fully off and brightness is reset
+  strip_clear();
+  strip.setBrightness(BRIGHTNESS_FULL);
 }
 
 // =============================================================================
@@ -373,16 +536,6 @@ void apply_lpf(float &filtered, float raw, float alpha) {
 // =============================================================================
 float vec_magnitude(float x, float y, float z) {
   return sqrtf(x * x + y * y + z * z);
-}
-
-// =============================================================================
-// UTILITY: LED Control
-// severity: 0=off, 1=green, 2=yellow, 3=red
-// =============================================================================
-void set_led(int severity) {
-  digitalWrite(PIN_LED_GREEN,  severity == 1 ? HIGH : LOW);
-  digitalWrite(PIN_LED_YELLOW, severity == 2 ? HIGH : LOW);
-  digitalWrite(PIN_LED_RED,    severity == 3 ? HIGH : LOW);
 }
 
 // =============================================================================
