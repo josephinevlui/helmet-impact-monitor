@@ -86,8 +86,8 @@ Adafruit_NeoPixel strip(NUM_LEDS, PIN_LED_STRIP, NEO_GRB + NEO_KHZ800);
 
 // Brightness levels for pulse animation (0–255)
 // Pulse sweeps from PULSE_LOW up to PULSE_HIGH and back down
-#define BRIGHTNESS_FULL   180    // Normal on brightness (not 255 — saves current)
-#define PULSE_HIGH        180
+#define BRIGHTNESS_FULL   150    // Normal on brightness (not 255 — saves current)
+#define PULSE_HIGH        150
 #define PULSE_LOW          10
 #define PULSE_STEP         10    // Brightness increment per animation step
 #define PULSE_DELAY_MS      8    // Milliseconds between animation steps
@@ -414,6 +414,8 @@ void classify_and_transmit(float peak_lin_g, float peak_rot_rad_s2) {
   show_impact(severity);
 
   // Data line — parsed by Python dashboard (no # prefix)
+  Serial.print("Severity: ");
+  Serial.println(severity, 1);
   Serial.print("Colour: ");
   Serial.println(colour_out);
   
@@ -492,18 +494,17 @@ void show_impact(int severity) {
   switch (severity) {
     case 3:  // Red
       r = 220; g = 0;   b = 0;
-      pulses = 3;   // Three pulses signals highest severity
+      pulses = 5;   // Three pulses signals highest severity
       break;
     case 2:  // Yellow
       r = 200; g = 120; b = 0;
-      pulses = 2;
+      pulses = 5;
       break;
     case 1:  // Green
       r = 0;   g = 180; b = 0;
-      pulses = 2;
+      pulses = 5;
       break;
-    default:  // Below threshold — brief white flash only
-      strip_fill(180, 180, 180);
+    default:  // Below threshold
       delay(100);
       strip_clear();
       return;
@@ -512,14 +513,15 @@ void show_impact(int severity) {
   // Pulse animation
   pulse_strip(r, g, b, pulses);
 
-  // Slow fade out after pulsing
-  for (int b_val = BRIGHTNESS_FULL; b_val >= 0; b_val -= 3) {
-    strip.setBrightness(b_val);
+  // Slow fade out after pulsing — b_val > 0 prevents unsigned underflow
+  for (int b_val = BRIGHTNESS_FULL; b_val > 0; b_val -= 3) {
+    strip.setBrightness(max(b_val, 0));
     strip.show();
     delay(12);
   }
-
-  // Ensure strip is fully off and brightness is reset
+  strip.setBrightness(0);
+  strip.show();
+  delay(10);
   strip_clear();
   strip.setBrightness(BRIGHTNESS_FULL);
 }
